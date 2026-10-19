@@ -33,6 +33,7 @@ data class TrialProgress(
     val originSelected: Boolean = false,
     val motiveSelected: Boolean = false,
     val dropdown: Dropdown? = null
+    val declarationToggled: Boolean = false
 )
 
 data class BankSnapshot(val labels: List<String>, val amountText: String? = null, val pageLabels: List<String> = labels) {
@@ -44,9 +45,12 @@ data class BankSnapshot(val labels: List<String>, val amountText: String? = null
 }
 
 enum class Action {
-    WAIT, OPEN_MENU, OPEN_MARKET, OPEN_BUY, OPEN_CURRENCY, SELECT_CURRENCY,
-    SET_AMOUNT, SUBMIT_AMOUNT, OPEN_ORIGIN, SELECT_ORIGIN, OPEN_MOTIVE,
-    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
+     WAIT, OPEN_MENU, OPEN_MARKET, OPEN_BUY, OPEN_CURRENCY, SELECT_CURRENCY,
+     SET_AMOUNT, SUBMIT_AMOUNT, OPEN_ORIGIN, SELECT_ORIGIN, OPEN_MOTIVE,
+-    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
++    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, CONTINUE_REVIEW,
++    ACCEPT_DECLARATION, CONTINUE_DECLARATION,
++    STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
 }
 
 data class Decision(val action: Action, val message: String) {
@@ -75,12 +79,14 @@ object TrialFlow {
         if (s.has("Algo ha salido mal") || s.has("Intenta realizar esta operación más tarde") ||
             s.has("servicio no disponible") || s.has("saldo insuficiente"))
             return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
-        if (s.pageHas("Verifica tu operación"))
-            return Decision(Action.STOP_REVIEW, if (progress.detailsSubmitted)
-                "Prueba completada. Revisa monto, moneda y cuentas en Mercantil. El asistente se ha detenido."
-                else "Ya estás en la revisión de una operación. El asistente se ha detenido sin modificarla.")
-        if (s.pageHas("Declaración jurada"))
-            return Decision(Action.STOP_DECLARATION, "Estás en la declaración jurada. El asistente de prueba se ha detenido.")
+// La declaración jurada va antes que la revisión: puede repetir textos del formulario.
+        if (s.pageHas("Declaración jurada")) {
+        if (!progress.declarationToggled)
+            return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
+            return Decision(Action.CONTINUE_DECLARATION, "Continuando. Este paso ejecuta la compra.")
+}
+if (s.pageHas("Verifica tu operación"))
+    return Decision(Action.CONTINUE_REVIEW, "Aceptando la revisión para abrir la declaración jurada.")
 
         when (progress.dropdown) {
             Dropdown.ORIGIN -> return if (s.exact("Ahorros personales"))
