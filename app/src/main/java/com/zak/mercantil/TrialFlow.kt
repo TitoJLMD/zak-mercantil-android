@@ -32,7 +32,7 @@ data class TrialProgress(
     val detailsSubmitted: Boolean = false,
     val originSelected: Boolean = false,
     val motiveSelected: Boolean = false,
-    val dropdown: Dropdown? = null
+    val dropdown: Dropdown? = null,
     val declarationToggled: Boolean = false
 )
 
@@ -45,12 +45,11 @@ data class BankSnapshot(val labels: List<String>, val amountText: String? = null
 }
 
 enum class Action {
-     WAIT, OPEN_MENU, OPEN_MARKET, OPEN_BUY, OPEN_CURRENCY, SELECT_CURRENCY,
-     SET_AMOUNT, SUBMIT_AMOUNT, OPEN_ORIGIN, SELECT_ORIGIN, OPEN_MOTIVE,
--    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
-+    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, CONTINUE_REVIEW,
-+    ACCEPT_DECLARATION, CONTINUE_DECLARATION,
-+    STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
+    WAIT, OPEN_MENU, OPEN_MARKET, OPEN_BUY, OPEN_CURRENCY, SELECT_CURRENCY,
+    SET_AMOUNT, SUBMIT_AMOUNT, OPEN_ORIGIN, SELECT_ORIGIN, OPEN_MOTIVE,
+    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, CONTINUE_REVIEW,
+    ACCEPT_DECLARATION, CONTINUE_DECLARATION,
+    STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
 }
 
 data class Decision(val action: Action, val message: String) {
@@ -71,7 +70,7 @@ object InteractionTiming {
     }
 }
 
-/** Plans only the route up to review. No action can accept or submit a purchase. */
+/** Plans the configured route from the observed bank screen and session progress. */
 object TrialFlow {
     fun decide(s: BankSnapshot, config: TrialConfig, progress: TrialProgress = TrialProgress()): Decision {
         if (s.has("Tu compra fue exitosa"))
@@ -79,14 +78,14 @@ object TrialFlow {
         if (s.has("Algo ha salido mal") || s.has("Intenta realizar esta operación más tarde") ||
             s.has("servicio no disponible") || s.has("saldo insuficiente"))
             return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
-// La declaración jurada va antes que la revisión: puede repetir textos del formulario.
+        // La declaración jurada va antes que la revisión: puede repetir textos del formulario.
         if (s.pageHas("Declaración jurada")) {
-        if (!progress.declarationToggled)
-            return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
+            if (!progress.declarationToggled)
+                return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
             return Decision(Action.CONTINUE_DECLARATION, "Continuando. Este paso ejecuta la compra.")
-}
-if (s.pageHas("Verifica tu operación"))
-    return Decision(Action.CONTINUE_REVIEW, "Aceptando la revisión para abrir la declaración jurada.")
+        }
+        if (s.pageHas("Verifica tu operación"))
+            return Decision(Action.CONTINUE_REVIEW, "Aceptando la revisión para abrir la declaración jurada.")
 
         when (progress.dropdown) {
             Dropdown.ORIGIN -> return if (s.exact("Ahorros personales"))

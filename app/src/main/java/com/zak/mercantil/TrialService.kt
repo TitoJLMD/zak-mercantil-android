@@ -158,6 +158,7 @@ class TrialService : AccessibilityService() {
                 if (decision.action == Action.SELECT_ORIGIN) progress = progress.copy(dropdown = null, originSelected = true)
                 if (decision.action == Action.SELECT_MOTIVE) progress = progress.copy(dropdown = null, motiveSelected = true)
                 if (decision.action == Action.SELECT_CURRENCY) progress = progress.copy(dropdown = null)
+                if (decision.action == Action.ACCEPT_DECLARATION) progress = progress.copy(declarationToggled = true)
                 attempts[decision.action] = (attempts[decision.action] ?: 0) + 1
                 scrollAttempts.remove(decision.action)
                 stalledSince = 0L
@@ -211,12 +212,10 @@ class TrialService : AccessibilityService() {
             reveal(nodes, nodes.firstOrNull { node -> listOf(node.text, node.contentDescription)
                 .any { it != null && normalized(it.toString()) == normalized(target) } }, true)
         }
-      Action.CONTINUE_REVIEW -> clickLabel(nodes, "Aceptar")
-      Action.ACCEPT_DECLARATION -> toggleLabel(nodes, "Acepto la Declaración Jurada")
-      Action.CONTINUE_DECLARATION -> clickLabel(nodes, "Continuar")
-       // Explicit allowlist: no click exists for Aceptar, Continuar or the sworn declaration.
-       // Explicit allowlist: cada acción nueva está declarada arriba.
-         else -> Outcome.NONE        else -> Outcome.NONE
+        Action.CONTINUE_REVIEW -> clickLabel(nodes, "Aceptar")
+        Action.ACCEPT_DECLARATION -> toggleLabel(nodes, "Acepto la Declaración Jurada")
+        Action.CONTINUE_DECLARATION -> clickLabel(nodes, "Continuar")
+        else -> Outcome.NONE
     }
 
     private fun clickLabel(nodes: List<AccessibilityNodeInfo>, vararg names: String): Outcome {
@@ -241,24 +240,25 @@ class TrialService : AccessibilityService() {
         if (disabled) return Outcome.NONE
         if (activeAction == Action.OPEN_MENU) return Outcome.NONE
         return reveal(nodes, hidden, progress.dropdown != null)
-        private fun toggleLabel(nodes: List<AccessibilityNodeInfo>, name: String): Outcome {
-    val expected = normalized(name)
-    val label = nodes.firstOrNull { n ->
-        listOf(n.text, n.contentDescription).any { it != null && normalized(it.toString()) == expected }
-    } ?: return Outcome.NONE
-    // El switch puede ser el nodo, un hermano de la fila, o el ancestro clickable.
-    val row = label.parent
-    val candidates = buildList {
-        add(label)
-        row?.let { add(it) }
-        if (row != null) for (i in 0 until row.childCount) row.getChild(i)?.let { add(it) }
     }
-    candidates.firstOrNull { it.isCheckable }?.let { sw ->
-        if (sw.isChecked) return Outcome.ACTED          // ya marcado: no lo apaga
-        if (sw.isClickable && sw.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
-    }
-    return if (clickAncestor(label)) Outcome.ACTED else Outcome.NONE
-}
+
+    private fun toggleLabel(nodes: List<AccessibilityNodeInfo>, name: String): Outcome {
+        val expected = normalized(name)
+        val label = nodes.firstOrNull { n ->
+            listOf(n.text, n.contentDescription).any { it != null && normalized(it.toString()) == expected }
+        } ?: return Outcome.NONE
+        // El switch puede ser el nodo, un hermano de la fila, o el ancestro clickable.
+        val row = label.parent
+        val candidates = buildList {
+            add(label)
+            row?.let { add(it) }
+            if (row != null) for (i in 0 until row.childCount) row.getChild(i)?.let { add(it) }
+        }
+        candidates.firstOrNull { it.isCheckable }?.let { sw ->
+            if (sw.isChecked) return Outcome.ACTED          // ya marcado: no lo apaga
+            if (sw.isClickable && sw.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
+        }
+        return if (clickAncestor(label)) Outcome.ACTED else Outcome.NONE
     }
 
     private fun reveal(nodes: List<AccessibilityNodeInfo>, target: AccessibilityNodeInfo?, popup: Boolean): Outcome {
