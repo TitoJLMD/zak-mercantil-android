@@ -11,7 +11,7 @@ class TrialFlowTest {
     private val amountLabels = listOf("Comprar divisas", "Ingresa los datos", "Tipo de moneda:", "Dólares (USD)", "Comprar USD.", "Comprar")
     private val details = listOf("Detalle del Producto", "Desde mi cuenta:", "A mi cuenta:", "Origen de los fondos:", "Motivo de la compra:", "Comprar")
 
-    @Test fun fullVideoRouteStopsAtReview() {
+    @Test fun fullVideoRouteReachesReviewAction() {
         fun expect(action: Action, labels: List<String>, value: String? = null, progress: TrialProgress = TrialProgress()) {
             assertEquals(action, TrialFlow.decide(BankSnapshot(labels, value), usd, progress).action)
         }
@@ -24,17 +24,23 @@ class TrialFlowTest {
         expect(Action.OPEN_MOTIVE, details + "Ahorros personales", progress = prepared)
         expect(Action.SELECT_MOTIVE, details + listOf("Ahorros personales", "Ahorros", "Remesas"), progress = prepared)
         expect(Action.SUBMIT_DETAILS, details + listOf("Ahorros personales", "Ahorros"), progress = prepared)
-        expect(Action.STOP_REVIEW, listOf("Verifica tu operación", "Aceptar", "Cancelar"), progress = TrialProgress(true, true))
+        expect(Action.CONTINUE_REVIEW, listOf("Verifica tu operación", "Aceptar", "Cancelar"), progress = TrialProgress(true, true))
     }
-    @Test fun reviewAlwaysStopsEvenWhenFormLabelsRemain() {
+    @Test fun reviewIsRecognizedEvenWhenFormLabelsRemain() {
         val result = TrialFlow.decide(BankSnapshot(amountLabels + details + "Verifica tu operación", "20"), usd, prepared)
-        assertTrue(result.terminal)
-        assertEquals(Action.STOP_REVIEW, result.action)
+        assertFalse(result.terminal)
+        assertEquals(Action.CONTINUE_REVIEW, result.action)
     }
-    @Test fun declarationCannotBeAcceptedByThisPlanner() {
+    @Test fun declarationRequestsSelectionBeforeContinuing() {
         val result = TrialFlow.decide(BankSnapshot(listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar")), usd)
-        assertTrue(result.terminal)
-        assertEquals(Action.STOP_DECLARATION, result.action)
+        assertFalse(result.terminal)
+        assertEquals(Action.ACCEPT_DECLARATION, result.action)
+    }
+    @Test fun selectedDeclarationAdvancesInsteadOfRepeatingSelection() {
+        val snapshot = BankSnapshot(listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar"))
+        val result = TrialFlow.decide(snapshot, usd, prepared.copy(declarationToggled = true))
+        assertFalse(result.terminal)
+        assertEquals(Action.CONTINUE_DECLARATION, result.action)
     }
     @Test fun bankErrorDoesNotCauseAutomaticRetry() {
         val result = TrialFlow.decide(BankSnapshot(amountLabels + listOf("Algo ha salido mal...", "Intenta realizar esta operación más tarde.")), usd)
@@ -110,16 +116,16 @@ class TrialFlowTest {
         assertEquals(Action.SELECT_CURRENCY, TrialFlow.decide(BankSnapshot(listOf("Euros")), eur, progress).action)
     }
 
-    @Test fun offscreenReviewHeaderStillStopsThePreparationAssistant() {
+    @Test fun offscreenReviewHeaderIsStillRecognized() {
         val snapshot = BankSnapshot(listOf("Aceptar", "Cancelar"), pageLabels = listOf("Verifica tu operación", "Aceptar", "Cancelar"))
-        assertEquals(Action.STOP_REVIEW, TrialFlow.decide(snapshot, usd,
+        assertEquals(Action.CONTINUE_REVIEW, TrialFlow.decide(snapshot, usd,
             prepared.copy(detailsSubmitted = true, dropdown = Dropdown.ORIGIN)).action)
     }
 
-    @Test fun declarationStopsEvenWhenScrolledAndASelectorWasPending() {
+    @Test fun declarationTakesPriorityWhenScrolledAndASelectorWasPending() {
         val snapshot = BankSnapshot(listOf("Acepto la Declaración Jurada", "Continuar"),
             pageLabels = listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar"))
-        assertEquals(Action.STOP_DECLARATION, TrialFlow.decide(snapshot, usd,
+        assertEquals(Action.ACCEPT_DECLARATION, TrialFlow.decide(snapshot, usd,
             prepared.copy(dropdown = Dropdown.MOTIVE)).action)
     }
 
