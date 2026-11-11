@@ -98,26 +98,42 @@ class TrialService : AccessibilityService() {
         } catch (_: Exception) { }
     }
 
+    private fun collectBankRoots(): List<AccessibilityNodeInfo> {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            for (w in windows) {
+                val r = try { w.root } catch (_: Exception) { null } ?: continue
+                if (r.packageName?.toString() == BANK_PACKAGE) roots.add(r) else recycle(r)
+            }
+        } catch (_: Exception) { }
+        if (roots.isEmpty()) {
+            val active = try { rootInActiveWindow } catch (_: Exception) { null }
+            if (active != null) {
+                if (active.packageName?.toString() == BANK_PACKAGE) roots.add(active) else recycle(active)
+            }
+        }
+        return roots
+    }
+
     private fun inspect() {
         val selected = config ?: return
         if (SystemClock.uptimeMillis() >= deadline) {
             finish("Terminó el tiempo de prueba. Revisa el último paso en ZAK Mercantil.")
             return
         }
-        val root = try { rootInActiveWindow } catch (_: Exception) { null } ?: return
+        val roots = collectBankRoots()
+        if (roots.isEmpty()) return
         val nodes = mutableListOf<AccessibilityNodeInfo>()
         try {
-            // Never act on another app, on a system authentication prompt, or on the keyboard.
-            if (root.packageName?.toString() != BANK_PACKAGE) return
             val pending = java.util.ArrayDeque<AccessibilityNodeInfo>()
-            pending.add(root)
-            while (pending.isNotEmpty() && nodes.size < 900) {
+            roots.forEach { pending.add(it) }
+            while (pending.isNotEmpty() && nodes.size < 1100) {
                 val n = pending.removeFirst()
                 nodes.add(n)
                 for (i in 0 until n.childCount) n.getChild(i)?.let { pending.add(it) }
             }
-            // Retain all references for cleanup even when the size guard stops traversal.
             while (pending.isNotEmpty()) nodes.add(pending.removeFirst())
+
             val readable = nodes.filter { !it.isPassword }
             val visible = readable.filter { it.isVisibleToUser }
             val labels = visible.flatMap { listOfNotNull(it.text?.toString(), it.contentDescription?.toString()) }
@@ -127,7 +143,9 @@ class TrialService : AccessibilityService() {
             val fields = visible.filter { it.isEnabled && (it.isEditable || it.className?.toString()?.endsWith("EditText") == true) }
             val numeric = fields.filter { it.inputType and InputType.TYPE_MASK_CLASS == InputType.TYPE_CLASS_NUMBER }
             val editable = numeric.ifEmpty { fields }
-            val snapshot = BankSnapshot(labels, editable.singleOrNull()?.text?.toString(), pageLabels)
+            val declarationChecked = readable.any { isSwitchOrCheck(it) && it.isChecked }
+
+            val snapshot = BankSnapshot(labels, editable.singleOrNull()?.text?.toString(), pageLabels, declarationChecked)
             val decision = TrialFlow.decide(snapshot, selected, progress)
             SessionStatus.update(decision.message)
             if (decision.terminal) { finish(decision.message); return }
@@ -138,7 +156,9 @@ class TrialService : AccessibilityService() {
             lastActionAt = SystemClock.uptimeMillis()
             lastAction = decision.action
             activeAction = decision.action
-            if ((attempts[decision.action] ?: 0) >= 3) {
+
+            val maxAttempts = if (decision.action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_DECLARATION)) 5 else 3
+            if ((attempts[decision.action] ?: 0) >= maxAttempts) {
                 finish("Este paso no cambió de pantalla. Completa el paso en Mercantil y vuelve a iniciar la prueba.")
                 return
             }
@@ -158,13 +178,19 @@ class TrialService : AccessibilityService() {
                 if (decision.action == Action.SELECT_ORIGIN) progress = progress.copy(dropdown = null, originSelected = true)
                 if (decision.action == Action.SELECT_MOTIVE) progress = progress.copy(dropdown = null, motiveSelected = true)
                 if (decision.action == Action.SELECT_CURRENCY) progress = progress.copy(dropdown = null)
-                if (decision.action == Action.ACCEPT_DECLARATION) progress = progress.copy(declarationToggled = true)
+                if (decision.action == Action.ACCEPT_DECLARATION) {
+                    progress = progress.copy(declarationToggled = true)
+                    attempts.remove(Action.CONTINUE_DECLARATION)
+                }
                 attempts[decision.action] = (attempts[decision.action] ?: 0) + 1
                 scrollAttempts.remove(decision.action)
                 stalledSince = 0L
             } else if (performed == Outcome.SCROLLED) {
                 scrollAttempts[decision.action] = (scrollAttempts[decision.action] ?: 0) + 1
                 stalledSince = 0L
+            } else if (decision.action == Action.CONTINUE_DECLARATION && !declarationChecked) {
+                // Si el botón Continuar sigue deshabilitado porque el switch no quedó marcado, reintentar marcar el switch.
+                progress = progress.copy(declarationToggled = false)
             } else if (decision.action == Action.OPEN_MENU && !menuHintShown) {
                 menuHintShown = true
                 Toast.makeText(this, "Toca la flecha amarilla del menú inferior de Mercantil para continuar la prueba.", Toast.LENGTH_LONG).show()
@@ -176,7 +202,7 @@ class TrialService : AccessibilityService() {
         } catch (_: Exception) {
             finish("La pantalla cambió durante la prueba. Revisa Mercantil antes de volver a iniciar.")
         } finally {
-            if (nodes.none { it === root }) recycle(root)
+            roots.forEach { r -> if (nodes.none { it === r }) recycle(r) }
             nodes.forEach(::recycle)
         }
     }
@@ -212,10 +238,100 @@ class TrialService : AccessibilityService() {
             reveal(nodes, nodes.firstOrNull { node -> listOf(node.text, node.contentDescription)
                 .any { it != null && normalized(it.toString()) == normalized(target) } }, true)
         }
-        Action.CONTINUE_REVIEW -> clickLabel(nodes, "Aceptar")
-        Action.ACCEPT_DECLARATION -> toggleLabel(nodes, "Acepto la Declaración Jurada")
-        Action.CONTINUE_DECLARATION -> clickLabel(nodes, "Continuar")
+        Action.CONTINUE_REVIEW -> clickLabel(nodes, "Aceptar", "Continuar", "Confirmar")
+        Action.ACCEPT_DECLARATION -> toggleDeclaration(nodes)
+        Action.CONTINUE_DECLARATION -> clickLabel(nodes, "Continuar", "Aceptar", "Confirmar")
         else -> Outcome.NONE
+    }
+
+    private fun isSwitchOrCheck(node: AccessibilityNodeInfo): Boolean {
+        if (node.isCheckable) return true
+        val cls = node.className?.toString().orEmpty()
+        return cls.contains("Switch", ignoreCase = true) ||
+            cls.contains("CheckBox", ignoreCase = true) ||
+            cls.contains("ToggleButton", ignoreCase = true) ||
+            cls.contains("CompoundButton", ignoreCase = true)
+    }
+
+    private fun toggleDeclaration(nodes: List<AccessibilityNodeInfo>): Outcome {
+        val phrases = listOf("acepto la declaracion jurada", "acepto la declaracion", "declaracion jurada")
+        val label = nodes.firstOrNull { n ->
+            n.isVisibleToUser && listOf(n.text, n.contentDescription).any { raw ->
+                val text = raw?.toString()?.let(::normalized).orEmpty()
+                text == "acepto la declaracion jurada" || (text.contains("acepto") && text.contains("declaracion"))
+            }
+        } ?: nodes.firstOrNull { n ->
+            n.isVisibleToUser && listOf(n.text, n.contentDescription).any { raw ->
+                val text = raw?.toString()?.let(::normalized).orEmpty()
+                phrases.any { text.contains(it) } && text.length < 120
+            }
+        }
+
+        // 1. Buscar cualquier Switch/CheckBox visible en el diálogo actual
+        val allSwitches = nodes.filter { it.isVisibleToUser && it.isEnabled && isSwitchOrCheck(it) }
+        for (sw in allSwitches) {
+            if (sw.isChecked) return Outcome.ACTED
+            if (sw.isClickable && sw.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
+            if (clickAncestor(sw)) return Outcome.ACTED
+            if (tapBounds(sw)) return Outcome.ACTED
+        }
+
+        // 2. Si el switch no expone isCheckable, buscar hermanos/vecinos en la fila de "Acepto la Declaración Jurada"
+        if (label != null) {
+            val container = label.parent
+            val grandParent = container?.parent
+            val family = buildList {
+                add(label)
+                container?.let { p ->
+                    add(p)
+                    for (i in 0 until p.childCount) p.getChild(i)?.let { add(it) }
+                }
+                grandParent?.let { gp ->
+                    for (i in 0 until gp.childCount) gp.getChild(i)?.let { child ->
+                        add(child)
+                        for (j in 0 until child.childCount) child.getChild(j)?.let { add(it) }
+                    }
+                }
+            }.filter { it.isVisibleToUser && it.isEnabled }
+
+            // Intentar un hermano clickable distinto del título del modal
+            family.firstOrNull { it !== label && it.isClickable }?.let { target ->
+                if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
+            }
+            if (clickAncestor(label)) return Outcome.ACTED
+            if (tapBounds(label)) return Outcome.ACTED
+        }
+
+        val hidden = nodes.firstOrNull { n ->
+            listOf(n.text, n.contentDescription).any { raw ->
+                raw != null && normalized(raw.toString()).contains("acepto")
+            }
+        }
+        return reveal(nodes, hidden, true)
+    }
+
+    private fun tapBounds(node: AccessibilityNodeInfo): Boolean {
+        if (gestureInFlight) return false
+        val bounds = Rect().also { node.getBoundsInScreen(it) }
+        if (bounds.width() <= 0 || bounds.height() <= 0) return false
+        val live = try { rootInActiveWindow } catch (_: Exception) { null }
+        if (live != null) {
+            val pkg = live.packageName?.toString()
+            recycle(live)
+            if (pkg != null && pkg != BANK_PACKAGE) return false
+        }
+        val path = Path().apply { moveTo(bounds.exactCenterX(), bounds.exactCenterY()) }
+        gestureInFlight = true
+        val accepted = dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 80)).build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(120) }
+                override fun onCancelled(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(220) }
+            },
+            handler
+        )
+        if (!accepted) gestureInFlight = false
+        return accepted
     }
 
     private fun clickLabel(nodes: List<AccessibilityNodeInfo>, vararg names: String): Outcome {
@@ -235,6 +351,7 @@ class TrialService : AccessibilityService() {
                 if (!node.isVisibleToUser) { if (hidden == null) hidden = node; continue }
                 if (!node.isEnabled) { disabled = true; continue }
                 if (clickAncestor(node)) return Outcome.ACTED
+                if (tapBounds(node)) return Outcome.ACTED
             }
         }
         if (disabled) return Outcome.NONE
@@ -242,28 +359,8 @@ class TrialService : AccessibilityService() {
         return reveal(nodes, hidden, progress.dropdown != null)
     }
 
-    private fun toggleLabel(nodes: List<AccessibilityNodeInfo>, name: String): Outcome {
-        val expected = normalized(name)
-        val label = nodes.firstOrNull { n ->
-            listOf(n.text, n.contentDescription).any { it != null && normalized(it.toString()) == expected }
-        } ?: return Outcome.NONE
-        // El switch puede ser el nodo, un hermano de la fila, o el ancestro clickable.
-        val row = label.parent
-        val candidates = buildList {
-            add(label)
-            row?.let { add(it) }
-            if (row != null) for (i in 0 until row.childCount) row.getChild(i)?.let { add(it) }
-        }
-        candidates.firstOrNull { it.isCheckable }?.let { sw ->
-            if (sw.isChecked) return Outcome.ACTED          // ya marcado: no lo apaga
-            if (sw.isClickable && sw.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
-        }
-        return if (clickAncestor(label)) Outcome.ACTED else Outcome.NONE
-    }
-
     private fun reveal(nodes: List<AccessibilityNodeInfo>, target: AccessibilityNodeInfo?, popup: Boolean): Outcome {
         if (gestureInFlight) return Outcome.NONE
-        // First ask the actual target's parent hierarchy to bring it into view.
         if (target != null && (scrollAttempts[activeAction] ?: 0) == 0 &&
             target.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) return Outcome.SCROLLED
         val root = nodes.firstOrNull() ?: return Outcome.NONE
@@ -282,7 +379,6 @@ class TrialService : AccessibilityService() {
             if (node.performAction(if (backwards) AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD else AccessibilityNodeInfo.ACTION_SCROLL_FORWARD))
                 return Outcome.SCROLLED
         }
-        // Some bank controls expose no scroll action. Use only a swipe in the bank's active window.
         val live = rootInActiveWindow ?: return Outcome.NONE
         val stillBank = try { live.packageName?.toString() == BANK_PACKAGE } finally { recycle(live) }
         if (!stillBank) return Outcome.NONE
