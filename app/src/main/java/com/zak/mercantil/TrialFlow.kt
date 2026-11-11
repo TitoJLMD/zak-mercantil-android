@@ -33,6 +33,7 @@ data class TrialProgress(
     val originSelected: Boolean = false,
     val motiveSelected: Boolean = false,
     val dropdown: Dropdown? = null,
+    val reviewAccepted: Boolean = false,
     val declarationToggled: Boolean = false
 )
 
@@ -68,15 +69,14 @@ object InteractionTiming {
     const val EVENT_MS = 80L
     fun delay(action: Action, previous: Action?): Long = when {
         previous == null -> 0L
-        action != previous -> 260L
-        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_200L
-        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 650L
+        action != previous -> 350L
+        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_100L
+        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 750L
         action == Action.SCROLL_OPTIONS -> 480L
         else -> 650L
     }
 }
 
-/** Plans the configured route from the observed bank screen and session progress. */
 object TrialFlow {
     fun decide(s: BankSnapshot, config: TrialConfig, progress: TrialProgress = TrialProgress()): Decision {
         if (s.has("Tu compra fue exitosa") || s.has("operacion exitosa") ||
@@ -88,8 +88,14 @@ object TrialFlow {
             s.has("mercado cerrado") || s.has("monto supera"))
             return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
 
-        // Pantalla de Declaración Jurada
-        if (s.pageHas("Declaración jurada") || s.pageHas("Acepto la Declaración Jurada") || s.pageHas("bajo fe de juramento")) {
+        // Reconoce Declaración Jurada por texto O porque ya aceptamos "Verifica tu operación" y ya no estamos en esa pantalla
+        val onDeclarationScreen = s.pageHas("Declaración jurada") ||
+            s.pageHas("Acepto la Declaración Jurada") ||
+            s.pageHas("bajo fe de juramento") ||
+            s.pageHas("normativa cambiaria") ||
+            (progress.reviewAccepted && !s.pageHas("Verifica tu operación"))
+
+        if (onDeclarationScreen) {
             if (!progress.declarationToggled && !s.declarationChecked)
                 return Decision(Action.ACCEPT_DECLARATION, "Marcando el switch de Declaración Jurada.")
             return Decision(Action.CONTINUE_DECLARATION, "Pulsando Continuar para ejecutar la compra.")
