@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="accessibility_description">Completa una prueba del formulario de divisas de Mercantil con el monto y moneda que elijas. Se detiene en Verifica tu operación. El inicio de sesión y la aceptación final los realizas tú en Mercantil.</string>
+    <string name="accessibility_description">Completa el flujo de compra de divisas en Mercantil con el monto y moneda que elijas, incluyendo la revisión, declaración jurada y confirmación final.</string>
 </resources>
