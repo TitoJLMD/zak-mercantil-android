@@ -36,7 +36,12 @@ data class TrialProgress(
     val declarationToggled: Boolean = false
 )
 
-data class BankSnapshot(val labels: List<String>, val amountText: String? = null, val pageLabels: List<String> = labels) {
+data class BankSnapshot(
+    val labels: List<String>,
+    val amountText: String? = null,
+    val pageLabels: List<String> = labels,
+    val declarationChecked: Boolean = false
+) {
     private val values = labels.map(::normalized)
     private val pageValues = pageLabels.map(::normalized)
     fun has(text: String): Boolean = values.any { it.contains(normalized(text)) }
@@ -64,7 +69,8 @@ object InteractionTiming {
     fun delay(action: Action, previous: Action?): Long = when {
         previous == null -> 0L
         action != previous -> 220L
-        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS) -> 1_400L
+        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_400L
+        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 550L
         action == Action.SCROLL_OPTIONS -> 480L
         else -> 650L
     }
@@ -73,19 +79,24 @@ object InteractionTiming {
 /** Plans the configured route from the observed bank screen and session progress. */
 object TrialFlow {
     fun decide(s: BankSnapshot, config: TrialConfig, progress: TrialProgress = TrialProgress()): Decision {
-        if (s.has("Tu compra fue exitosa"))
-            return Decision(Action.STOP_SUCCESS, "Mercantil muestra una compra exitosa. Asistente detenido.")
+        if (s.has("Tu compra fue exitosa") || s.has("operacion exitosa") ||
+            (s.pageHas("Comprobante") && s.pageHas("Referencia")))
+            return Decision(Action.STOP_SUCCESS, "Mercantil muestra una compra exitosa. Operación finalizada.")
+
         if (s.has("Algo ha salido mal") || s.has("Intenta realizar esta operación más tarde") ||
-            s.has("servicio no disponible") || s.has("saldo insuficiente"))
+            s.has("servicio no disponible") || s.has("saldo insuficiente") ||
+            s.has("mercado cerrado") || s.has("monto supera"))
             return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
-        // La declaración jurada va antes que la revisión: puede repetir textos del formulario.
-        if (s.pageHas("Declaración jurada")) {
-            if (!progress.declarationToggled)
+
+        // La declaración jurada va antes que la revisión: puede superponerse sobre el resumen.
+        if (s.pageHas("Declaración jurada") || s.pageHas("Acepto la Declaración Jurada")) {
+            if (!progress.declarationToggled && !s.declarationChecked)
                 return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
-            return Decision(Action.CONTINUE_DECLARATION, "Continuando. Este paso ejecuta la compra.")
+            return Decision(Action.CONTINUE_DECLARATION, "Confirmando declaración jurada y ejecutando la compra.")
         }
+
         if (s.pageHas("Verifica tu operación"))
-            return Decision(Action.CONTINUE_REVIEW, "Aceptando la revisión para abrir la declaración jurada.")
+            return Decision(Action.CONTINUE_REVIEW, "Aceptando Verifica tu operación para abrir la declaración jurada.")
 
         when (progress.dropdown) {
             Dropdown.ORIGIN -> return if (s.exact("Ahorros personales"))
