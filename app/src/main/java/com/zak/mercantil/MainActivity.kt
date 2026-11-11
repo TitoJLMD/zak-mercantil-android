@@ -12,7 +12,6 @@ import android.provider.Settings
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
-import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -38,17 +37,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Launcher intents are intentionally ignored. Only a button press starts a run.
         val prefs = getSharedPreferences("trial_config", MODE_PRIVATE)
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(22), dp(20), dp(28))
         }
         content.addView(text("ZAK Mercantil", 28, true))
-        content.addView(text("PRUEBA DE RECORRIDO · 0.2", 12).apply { setTextColor(teal) })
+        content.addView(text("RECORRIDO COMPLETO · 0.3", 12).apply { setTextColor(teal) })
         content.addView(card().apply {
-            addView(text("Hasta la revisión de la compra", 18, true))
-            addView(text("El asistente se detiene en “Verifica tu operación”. Tú revisas los datos y decides cómo continuar en Mercantil.", 14))
+            addView(text("Flujo completo hasta confirmar", 18, true))
+            addView(text("Completa el formulario, acepta Verifica tu operación, marca la Declaración Jurada y pulsa Continuar para ejecutar la compra.", 14))
         })
         content.addView(card().apply {
             addView(text("Monto a comprar", 15, true))
@@ -85,9 +83,9 @@ class MainActivity : Activity() {
             addView(text("Activa “ZAK Mercantil Prueba”. Después abre Mercantil e inicia sesión directamente en el banco.", 14))
             addView(button("2 · Abrir Mercantil", false) { openBank() })
         })
-        start = button("3 · Probar recorrido", true) { begin() }
+        start = button("3 · Iniciar compra", true) { begin() }
         content.addView(start)
-        content.addView(button("Detener prueba", false) {
+        content.addView(button("Detener", false) {
             TrialService.instance?.stop("Prueba detenida por ti.")
             refresh()
         }.apply { setTextColor(Color.rgb(174, 40, 50)) })
