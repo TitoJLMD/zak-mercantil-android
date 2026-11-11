@@ -68,9 +68,9 @@ object InteractionTiming {
     const val EVENT_MS = 80L
     fun delay(action: Action, previous: Action?): Long = when {
         previous == null -> 0L
-        action != previous -> 220L
-        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_400L
-        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 550L
+        action != previous -> 260L
+        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_200L
+        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 650L
         action == Action.SCROLL_OPTIONS -> 480L
         else -> 650L
     }
@@ -88,11 +88,11 @@ object TrialFlow {
             s.has("mercado cerrado") || s.has("monto supera"))
             return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
 
-        // La declaración jurada va antes que la revisión: puede superponerse sobre el resumen.
-        if (s.pageHas("Declaración jurada") || s.pageHas("Acepto la Declaración Jurada")) {
+        // Pantalla de Declaración Jurada
+        if (s.pageHas("Declaración jurada") || s.pageHas("Acepto la Declaración Jurada") || s.pageHas("bajo fe de juramento")) {
             if (!progress.declarationToggled && !s.declarationChecked)
-                return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
-            return Decision(Action.CONTINUE_DECLARATION, "Confirmando declaración jurada y ejecutando la compra.")
+                return Decision(Action.ACCEPT_DECLARATION, "Marcando el switch de Declaración Jurada.")
+            return Decision(Action.CONTINUE_DECLARATION, "Pulsando Continuar para ejecutar la compra.")
         }
 
         if (s.pageHas("Verifica tu operación"))
@@ -111,7 +111,6 @@ object TrialFlow {
             null -> Unit
         }
 
-        // Sheets overlay the form; recognize their options before the underlying page.
         if (s.exact("Ahorros personales") && s.exact("Actividad comercial de empresa"))
             return Decision(Action.SELECT_ORIGIN, "Seleccionando Ahorros personales.")
         if (s.exact("Ahorros") && s.exact("Remesas"))
