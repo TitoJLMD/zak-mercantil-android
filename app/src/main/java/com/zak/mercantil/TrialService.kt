@@ -127,7 +127,7 @@ class TrialService : AccessibilityService() {
         try {
             val pending = java.util.ArrayDeque<AccessibilityNodeInfo>()
             roots.forEach { pending.add(it) }
-            while (pending.isNotEmpty() && nodes.size < 1100) {
+            while (pending.isNotEmpty() && nodes.size < 1200) {
                 val n = pending.removeFirst()
                 nodes.add(n)
                 for (i in 0 until n.childCount) n.getChild(i)?.let { pending.add(it) }
@@ -157,9 +157,9 @@ class TrialService : AccessibilityService() {
             lastAction = decision.action
             activeAction = decision.action
 
-            val maxAttempts = if (decision.action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_DECLARATION)) 6 else 3
+            val maxAttempts = if (decision.action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_DECLARATION)) 8 else 3
             if ((attempts[decision.action] ?: 0) >= maxAttempts) {
-                finish("Este paso no cambió de pantalla. Completa el paso en Mercantil y vuelve a iniciar la prueba.")
+                finish("Este paso no cambió de pantalla tras varios intentos. Revisa Mercantil.")
                 return
             }
             if ((scrollAttempts[decision.action] ?: 0) >= 10) {
@@ -182,11 +182,8 @@ class TrialService : AccessibilityService() {
                     progress = progress.copy(declarationToggled = true)
                 }
                 if (decision.action == Action.CONTINUE_DECLARATION && !declarationChecked) {
-                    // Si tras pulsar Continuar una vez sigue en esta pantalla, alterna a reintentar el switch en el próximo ciclo
-                    val contTries = (attempts[Action.CONTINUE_DECLARATION] ?: 0) + 1
-                    if (contTries % 2 == 0) {
-                        progress = progress.copy(declarationToggled = false)
-                    }
+                    // Si pulsó Continuar y sigue en Declaración Jurada, vuelve a intentar el switch con la siguiente estrategia
+                    progress = progress.copy(declarationToggled = false)
                 }
                 attempts[decision.action] = (attempts[decision.action] ?: 0) + 1
                 scrollAttempts.remove(decision.action)
@@ -258,101 +255,124 @@ class TrialService : AccessibilityService() {
             cls.contains("CompoundButton", ignoreCase = true)
     }
 
+    private fun screenBounds(nodes: List<AccessibilityNodeInfo>): Rect {
+        val dm = resources.displayMetrics
+        val fallback = Rect(0, 0, dm.widthPixels, dm.heightPixels)
+        val root = nodes.firstOrNull() ?: return fallback
+        val r = Rect().also { root.getBoundsInScreen(it) }
+        return if (r.width() > 200 && r.height() > 400) r else fallback
+    }
+
     private fun toggleDeclaration(nodes: List<AccessibilityNodeInfo>): Outcome {
-        val root = nodes.firstOrNull() ?: return Outcome.NONE
-        val windowBounds = Rect().also { root.getBoundsInScreen(it) }
+        val windowBounds = screenBounds(nodes)
+        val tryIndex = attempts[Action.ACCEPT_DECLARATION] ?: 0
 
-        // 1. Buscar la etiqueta "Acepto la Declaración Jurada" para conocer su coordenada vertical (Y)
-        val label = nodes.firstOrNull { n ->
-            n.isVisibleToUser && listOf(n.text, n.contentDescription).any { raw ->
-                val text = raw?.toString()?.let(::normalized).orEmpty()
-                text == "acepto la declaracion jurada" || (text.contains("acepto") && text.contains("declaracion"))
-            }
-        }
-
-        // 2. Si existe un Switch/CheckBox explícito en pantalla, accionarlo o tocar sus coordenadas
-        val allSwitches = nodes.filter { it.isVisibleToUser && it.isEnabled && isSwitchOrCheck(it) }
-        for (sw in allSwitches) {
-            if (sw.isChecked) return Outcome.ACTED
-            val swTry = attempts[Action.ACCEPT_DECLARATION] ?: 0
-            if (swTry == 0 && sw.isClickable && sw.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return Outcome.ACTED
-            if (tapBounds(sw)) return Outcome.ACTED
-        }
-
-        if (label != null) {
-            val labelBounds = Rect().also { label.getBoundsInScreen(it) }
-            if (labelBounds.width() > 0 && labelBounds.height() > 0) {
-                val labelCenterY = labelBounds.exactCenterY()
-
-                // 3. Buscar cualquier nodo visible a la derecha del texto en la misma fila horizontal (el switch ovalado)
-                val rightCandidates = nodes.filter { n ->
-                    n !== label && n.isVisibleToUser && n.isEnabled
-                }.map { n ->
-                    n to Rect().also { n.getBoundsInScreen(it) }
-                }.filter { (_, r) ->
-                    r.width() in 20..(windowBounds.width() / 2) &&
-                        r.height() in 15..220 &&
-                        r.centerX() > windowBounds.centerX() &&
-                        abs(r.exactCenterY() - labelCenterY) < 90f
-                }.sortedByDescending { (n, r) ->
-                    (if (n.isClickable || isSwitchOrCheck(n)) 1000 else 0) + r.centerX()
-                }
-
-                val attemptIndex = attempts[Action.ACCEPT_DECLARATION] ?: 0
-                if (rightCandidates.isNotEmpty() && attemptIndex == 0) {
-                    val (switchNode, switchRect) = rightCandidates.first()
-                    if (switchNode.isClickable && switchNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-                        return Outcome.ACTED
-                    }
-                    if (tapPoint(switchRect.exactCenterX(), switchRect.exactCenterY())) {
-                        return Outcome.ACTED
-                    }
-                }
-
-                // 4. Toque directo en las coordenadas del switch a la derecha de "Acepto la Declaración Jurada" (83% del ancho)
-                if (windowBounds.width() > 0) {
-                    val targetX = windowBounds.left + windowBounds.width() * 0.83f
-                    if (tapPoint(targetX, labelCenterY)) return Outcome.ACTED
-                }
-            }
-        }
-
-        // 5. Respaldo usando el botón "Continuar" como referencia (el switch está justo arriba a la derecha)
+        // 1. Buscar el botón "Continuar" (es el ancla geométrica más confiable en esta pantalla)
         val continueNode = nodes.firstOrNull { n ->
             n.isVisibleToUser && listOf(n.text, n.contentDescription).any {
                 it != null && normalized(it.toString()) == "continuar"
             }
         }
-        if (continueNode != null && windowBounds.width() > 0) {
-            val contRect = Rect().also { continueNode.getBoundsInScreen(it) }
-            if (contRect.height() > 0) {
-                val targetX = windowBounds.left + windowBounds.width() * 0.83f
-                val targetY = contRect.top - (contRect.height() * 0.85f)
-                if (tapPoint(targetX, targetY)) return Outcome.ACTED
+        val contRect = continueNode?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
+            ?.takeIf { it.width() > 40 && it.height() > 25 }
+
+        // 2. Buscar el nodo de "Acepto la Declaración Jurada"
+        val label = nodes.filter { n ->
+            n.isVisibleToUser && listOf(n.text, n.contentDescription).any { raw ->
+                val text = raw?.toString()?.let(::normalized).orEmpty()
+                text.contains("acepto") && text.contains("declaracion")
             }
+        }.minByOrNull { n ->
+            val r = Rect().also { n.getBoundsInScreen(it) }
+            if (r.height() > 0) r.height() else Int.MAX_VALUE
+        }
+        val labelRect = label?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
+            ?.takeIf { it.width() > 20 && it.height() > 10 }
+
+        // 3. Calcular la altura Y exacta del switch:
+        // Si el label es una sola línea (alto < 160px), usar su centro; si es una caja grande, usar cerca de su borde inferior;
+        // y si tenemos el botón Continuar, el switch está justo encima de Continuar (a ~0.82 veces la altura del botón por encima de su borde superior).
+        val switchY: Float = when {
+            labelRect != null && labelRect.height() in 15..160 -> labelRect.exactCenterY()
+            contRect != null -> contRect.top - (contRect.height() * 0.82f)
+            labelRect != null -> labelRect.bottom - 35f
+            else -> windowBounds.top + windowBounds.height() * 0.675f
         }
 
-        val hidden = nodes.firstOrNull { n ->
-            listOf(n.text, n.contentDescription).any { raw ->
-                raw != null && normalized(raw.toString()).contains("acepto")
+        // 4. Buscar si existe algún nodo específico en el lado derecho cerca de switchY (el propio control del switch)
+        val rightSwitchNode = nodes.filter { n ->
+            n !== label && n !== continueNode && n.isVisibleToUser && n.isEnabled
+        }.map { n ->
+            n to Rect().also { n.getBoundsInScreen(it) }
+        }.filter { (_, r) ->
+            r.width() in 25..(windowBounds.width() / 2) &&
+                r.height() in 15..200 &&
+                r.centerX() > windowBounds.centerX() &&
+                abs(r.exactCenterY() - switchY) < 110f
+        }.minByOrNull { (_, r) ->
+            abs(r.exactCenterY() - switchY)
+        }
+
+        val centerSwitchX = rightSwitchNode?.second?.exactCenterX()
+            ?: (windowBounds.left + windowBounds.width() * 0.83f)
+        val exactSwitchY = rightSwitchNode?.second?.exactCenterY() ?: switchY
+
+        SessionStatus.update("Activando switch Declaración Jurada (intento ${tryIndex + 1})...")
+
+        // Alternar estrategias en cada intento por si el componente requiere click nativo, tap en el óvalo o swipe horizontal:
+        return when (tryIndex % 4) {
+            0 -> {
+                // Intento 1: Si hay nodo en la derecha y acepta click nativo, usarlo; además/sino, tap directo en el centro del switch (83% X)
+                if (rightSwitchNode != null && rightSwitchNode.first.isClickable &&
+                    rightSwitchNode.first.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    Outcome.ACTED
+                } else if (tapPoint(centerSwitchX, exactSwitchY)) {
+                    Outcome.ACTED
+                } else Outcome.NONE
+            }
+            1 -> {
+                // Intento 2: Deslizar (swipe corto) la bolita del switch de izquierda a derecha (77% X -> 88% X)
+                val startX = windowBounds.left + windowBounds.width() * 0.77f
+                val endX = windowBounds.left + windowBounds.width() * 0.88f
+                if (swipeHorizontal(startX, endX, exactSwitchY)) Outcome.ACTED else Outcome.NONE
+            }
+            2 -> {
+                // Intento 3: Tap en el lado derecho del óvalo del switch (86% X) usando la referencia del botón Continuar
+                val yFromCont = contRect?.let { it.top - (it.height() * 0.82f) } ?: exactSwitchY
+                val rightX = windowBounds.left + windowBounds.width() * 0.86f
+                if (tapPoint(rightX, yFromCont)) Outcome.ACTED else Outcome.NONE
+            }
+            else -> {
+                // Intento 4: Tap en el lado izquierdo del óvalo (79% X, sobre la bolita blanca) o sobre el texto de la fila
+                val leftBallX = windowBounds.left + windowBounds.width() * 0.79f
+                if (tapPoint(leftBallX, exactSwitchY)) Outcome.ACTED
+                else if (label != null && clickAncestor(label)) Outcome.ACTED
+                else Outcome.NONE
             }
         }
-        return reveal(nodes, hidden, true)
     }
 
     private fun clickContinueDeclaration(nodes: List<AccessibilityNodeInfo>): Outcome {
+        val windowBounds = screenBounds(nodes)
         val target = nodes.firstOrNull { n ->
             n.isVisibleToUser && listOf(n.text, n.contentDescription).any {
                 it != null && normalized(it.toString()) in setOf("continuar", "aceptar", "confirmar")
             }
         }
+        val tryCount = attempts[Action.CONTINUE_DECLARATION] ?: 0
         if (target != null) {
-            val tryCount = attempts[Action.CONTINUE_DECLARATION] ?: 0
-            // En el primer intento prueba click de accesibilidad; si no, hace toque físico directo sobre el botón azul
-            if (tryCount == 0 && clickAncestor(target)) return Outcome.ACTED
-            if (tapBounds(target)) return Outcome.ACTED
+            val r = Rect().also { target.getBoundsInScreen(it) }
+            // Alternar entre toque físico sobre las coordenadas del botón azul y click de accesibilidad
+            if (tryCount % 2 == 0 && r.width() > 0 && r.height() > 0) {
+                if (tapPoint(r.exactCenterX(), r.exactCenterY())) return Outcome.ACTED
+            }
             if (clickAncestor(target)) return Outcome.ACTED
+            if (tapBounds(target)) return Outcome.ACTED
         }
+        // Respaldo geométrico al centro del botón Continuar (50% X, 76% Y)
+        val fallbackX = windowBounds.left + windowBounds.width() * 0.50f
+        val fallbackY = windowBounds.top + windowBounds.height() * 0.76f
+        if (tapPoint(fallbackX, fallbackY)) return Outcome.ACTED
         return clickLabel(nodes, "Continuar", "Aceptar", "Confirmar")
     }
 
@@ -371,13 +391,43 @@ class TrialService : AccessibilityService() {
             recycle(live)
             if (pkg != null && pkg != BANK_PACKAGE) return false
         }
-        val path = Path().apply { moveTo(x, y) }
+        // Micro-trazo de 2px para garantizar que WebViews/Flutter registren touchDown + touchUp como tap válido
+        val path = Path().apply {
+            moveTo(x, y)
+            lineTo(x + 2f, y + 1f)
+        }
         gestureInFlight = true
         val accepted = dispatchGesture(
-            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 95)).build(),
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 110)).build(),
             object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(150) }
-                override fun onCancelled(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(250) }
+                override fun onCompleted(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(180) }
+                override fun onCancelled(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(260) }
+            },
+            handler
+        )
+        if (!accepted) gestureInFlight = false
+        return accepted
+    }
+
+    private fun swipeHorizontal(startX: Float, endX: Float, y: Float): Boolean {
+        if (gestureInFlight) return false
+        if (startX <= 0f || endX <= 0f || y <= 0f) return false
+        val live = try { rootInActiveWindow } catch (_: Exception) { null }
+        if (live != null) {
+            val pkg = live.packageName?.toString()
+            recycle(live)
+            if (pkg != null && pkg != BANK_PACKAGE) return false
+        }
+        val path = Path().apply {
+            moveTo(startX, y)
+            lineTo(endX, y)
+        }
+        gestureInFlight = true
+        val accepted = dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 180)).build(),
+            object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(180) }
+                override fun onCancelled(gestureDescription: GestureDescription?) { gestureInFlight = false; schedule(260) }
             },
             handler
         )
@@ -414,8 +464,7 @@ class TrialService : AccessibilityService() {
         if (gestureInFlight) return Outcome.NONE
         if (target != null && (scrollAttempts[activeAction] ?: 0) == 0 &&
             target.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)) return Outcome.SCROLLED
-        val root = nodes.firstOrNull() ?: return Outcome.NONE
-        val window = Rect().also { root.getBoundsInScreen(it) }
+        val window = screenBounds(nodes)
         if (window.width() <= 0 || window.height() <= 0) return Outcome.NONE
         val targetBounds = target?.let { n -> Rect().also { n.getBoundsInScreen(it) } }
         val backwards = targetBounds != null && targetBounds.height() > 0 && targetBounds.bottom < window.top + window.height() / 6
