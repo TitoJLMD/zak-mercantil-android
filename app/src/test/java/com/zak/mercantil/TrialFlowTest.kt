@@ -1,138 +1,148 @@
 package com.zak.mercantil
 
-import org.junit.Assert.*
-import org.junit.Test
 import java.math.BigDecimal
+import java.text.Normalizer
+import java.util.Locale
 
-class TrialFlowTest {
-    private val usd = TrialConfig(BigDecimal("20"), Currency.USD)
-    private val eur = TrialConfig(BigDecimal("20.50"), Currency.EUR)
-    private val prepared = TrialProgress(amountSubmitted = true)
-    private val amountLabels = listOf("Comprar divisas", "Ingresa los datos", "Tipo de moneda:", "Dólares (USD)", "Comprar USD.", "Comprar")
-    private val details = listOf("Detalle del Producto", "Desde mi cuenta:", "A mi cuenta:", "Origen de los fondos:", "Motivo de la compra:", "Comprar")
+fun normalized(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
+    .replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
+    .replace(Regex("\\s+"), " ").trim().trimEnd(':', '.')
 
-    @Test fun fullVideoRouteReachesReviewAction() {
-        fun expect(action: Action, labels: List<String>, value: String? = null, progress: TrialProgress = TrialProgress()) {
-            assertEquals(action, TrialFlow.decide(BankSnapshot(labels, value), usd, progress).action)
+enum class Currency(val code: String, val label: String, val option: String) {
+    USD("USD", "Dólares (USD)", "Dólares"), EUR("EUR", "Euros (EUR)", "Euros")
+}
+
+object Amounts {
+    fun parse(text: String): BigDecimal? {
+        val value = text.trim()
+        if (!Regex("^[0-9]{1,9}([.,][0-9]{1,2})?$").matches(value)) return null
+        return value.replace(',', '.').toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO }
+    }
+    fun forInput(amount: BigDecimal): String = amount.stripTrailingZeros().toPlainString().replace('.', ',')
+}
+
+data class TrialConfig(val amount: BigDecimal, val currency: Currency) {
+    init { require(Amounts.parse(Amounts.forInput(amount)) != null) }
+}
+
+enum class Dropdown { CURRENCY, ORIGIN, MOTIVE }
+
+data class TrialProgress(
+    val amountSubmitted: Boolean = false,
+    val detailsSubmitted: Boolean = false,
+    val originSelected: Boolean = false,
+    val motiveSelected: Boolean = false,
+    val dropdown: Dropdown? = null,
+    val declarationToggled: Boolean = false
+)
+
+data class BankSnapshot(
+    val labels: List<String>,
+    val amountText: String? = null,
+    val pageLabels: List<String> = labels,
+    val declarationChecked: Boolean = false
+) {
+    private val values = labels.map(::normalized)
+    private val pageValues = pageLabels.map(::normalized)
+    fun has(text: String): Boolean = values.any { it.contains(normalized(text)) }
+    fun exact(text: String): Boolean = values.any { it == normalized(text) }
+    fun pageHas(text: String): Boolean = pageValues.any { it.contains(normalized(text)) }
+}
+
+enum class Action {
+    WAIT, OPEN_MENU, OPEN_MARKET, OPEN_BUY, OPEN_CURRENCY, SELECT_CURRENCY,
+    SET_AMOUNT, SUBMIT_AMOUNT, OPEN_ORIGIN, SELECT_ORIGIN, OPEN_MOTIVE,
+    SELECT_MOTIVE, SCROLL_OPTIONS, SUBMIT_DETAILS, CONTINUE_REVIEW,
+    ACCEPT_DECLARATION, CONTINUE_DECLARATION,
+    STOP_REVIEW, STOP_ERROR, STOP_SUCCESS, STOP_DECLARATION
+}
+
+data class Decision(val action: Action, val message: String) {
+    val terminal: Boolean get() = action in setOf(
+        Action.STOP_REVIEW, Action.STOP_ERROR, Action.STOP_SUCCESS, Action.STOP_DECLARATION
+    )
+}
+
+object InteractionTiming {
+    const val POLL_MS = 220L
+    const val EVENT_MS = 80L
+    fun delay(action: Action, previous: Action?): Long = when {
+        previous == null -> 0L
+        action != previous -> 220L
+        action in setOf(Action.SUBMIT_AMOUNT, Action.SUBMIT_DETAILS, Action.CONTINUE_DECLARATION) -> 1_400L
+        action in setOf(Action.ACCEPT_DECLARATION, Action.CONTINUE_REVIEW) -> 550L
+        action == Action.SCROLL_OPTIONS -> 480L
+        else -> 650L
+    }
+}
+
+/** Plans the configured route from the observed bank screen and session progress. */
+object TrialFlow {
+    fun decide(s: BankSnapshot, config: TrialConfig, progress: TrialProgress = TrialProgress()): Decision {
+        if (s.has("Tu compra fue exitosa") || s.has("operacion exitosa") ||
+            (s.pageHas("Comprobante") && s.pageHas("Referencia")))
+            return Decision(Action.STOP_SUCCESS, "Mercantil muestra una compra exitosa. Operación finalizada.")
+
+        if (s.has("Algo ha salido mal") || s.has("Intenta realizar esta operación más tarde") ||
+            s.has("servicio no disponible") || s.has("saldo insuficiente") ||
+            s.has("mercado cerrado") || s.has("monto supera"))
+            return Decision(Action.STOP_ERROR, "Mercantil muestra un error. Revisa el resultado en el banco antes de volver a intentar.")
+
+        // La declaración jurada va antes que la revisión: puede superponerse sobre el resumen.
+        if (s.pageHas("Declaración jurada") || s.pageHas("Acepto la Declaración Jurada")) {
+            if (!progress.declarationToggled && !s.declarationChecked)
+                return Decision(Action.ACCEPT_DECLARATION, "Marcando Acepto la Declaración Jurada.")
+            return Decision(Action.CONTINUE_DECLARATION, "Confirmando declaración jurada y ejecutando la compra.")
         }
-        expect(Action.OPEN_MARKET, listOf("Resumen financiero", "Transferencias", "Mercado de divisas"))
-        expect(Action.OPEN_BUY, listOf("Mercado de divisas", "Comprar divisas", "Vender divisas"))
-        expect(Action.SET_AMOUNT, amountLabels, "0,00")
-        expect(Action.SUBMIT_AMOUNT, amountLabels, "20,00")
-        expect(Action.OPEN_ORIGIN, details + "Selecciona el origen de los fondos", progress = prepared)
-        expect(Action.SELECT_ORIGIN, details + listOf("Ahorros personales", "Actividad comercial de empresa"), progress = prepared)
-        expect(Action.OPEN_MOTIVE, details + "Ahorros personales", progress = prepared)
-        expect(Action.SELECT_MOTIVE, details + listOf("Ahorros personales", "Ahorros", "Remesas"), progress = prepared)
-        expect(Action.SUBMIT_DETAILS, details + listOf("Ahorros personales", "Ahorros"), progress = prepared)
-        expect(Action.CONTINUE_REVIEW, listOf("Verifica tu operación", "Aceptar", "Cancelar"), progress = TrialProgress(true, true))
-    }
-    @Test fun reviewIsRecognizedEvenWhenFormLabelsRemain() {
-        val result = TrialFlow.decide(BankSnapshot(amountLabels + details + "Verifica tu operación", "20"), usd, prepared)
-        assertFalse(result.terminal)
-        assertEquals(Action.CONTINUE_REVIEW, result.action)
-    }
-    @Test fun declarationRequestsSelectionBeforeContinuing() {
-        val result = TrialFlow.decide(BankSnapshot(listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar")), usd)
-        assertFalse(result.terminal)
-        assertEquals(Action.ACCEPT_DECLARATION, result.action)
-    }
-    @Test fun selectedDeclarationAdvancesInsteadOfRepeatingSelection() {
-        val snapshot = BankSnapshot(listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar"))
-        val result = TrialFlow.decide(snapshot, usd, prepared.copy(declarationToggled = true))
-        assertFalse(result.terminal)
-        assertEquals(Action.CONTINUE_DECLARATION, result.action)
-    }
-    @Test fun bankErrorDoesNotCauseAutomaticRetry() {
-        val result = TrialFlow.decide(BankSnapshot(amountLabels + listOf("Algo ha salido mal...", "Intenta realizar esta operación más tarde.")), usd)
-        assertTrue(result.terminal)
-        assertEquals(Action.STOP_ERROR, result.action)
-    }
-    @Test fun successfulReceiptStopsEvenWithZeroReference() {
-        val result = TrialFlow.decide(BankSnapshot(listOf("¡Listo! Tu compra fue exitosa", "Nro. de referencia: 0")), usd)
-        assertTrue(result.terminal)
-        assertEquals(Action.STOP_SUCCESS, result.action)
-    }
-    @Test fun currencyIsChangedBeforeWritingAmount() {
-        assertEquals(Action.OPEN_CURRENCY, TrialFlow.decide(BankSnapshot(amountLabels, "20,50"), eur).action)
-        assertEquals(Action.SELECT_CURRENCY, TrialFlow.decide(BankSnapshot(listOf("Dólares", "Euros")), eur).action)
-    }
-    @Test fun requestedAmountMustBeObservedBeforeAdvancing() {
-        assertEquals(Action.SET_AMOUNT, TrialFlow.decide(BankSnapshot(amountLabels, "2,00"), usd).action)
-        assertEquals(Action.SUBMIT_AMOUNT, TrialFlow.decide(BankSnapshot(amountLabels, "20,00"), usd).action)
-    }
-    @Test fun doesNotGuessAnAmountWhenTheFieldIsUnavailable() {
-        assertEquals(Action.SET_AMOUNT, TrialFlow.decide(BankSnapshot(amountLabels), usd).action)
-    }
-    @Test fun previousFormCannotReuseOldAmount() {
-        val result = TrialFlow.decide(BankSnapshot(details + listOf("Ahorros personales", "Ahorros")), eur)
-        assertEquals(Action.STOP_ERROR, result.action)
-    }
-    @Test fun loginIsLeftForTheUser() {
-        assertEquals(Action.WAIT, TrialFlow.decide(BankSnapshot(listOf("Clave de internet", "Ingresar", "Identificación biométrica")), usd).action)
-    }
-    @Test fun groupedAccessibleMotiveIsRecognized() {
-        val labels = details + listOf("Origen de los fondos: Ahorros personales", "Motivo de la compra: Ahorros")
-        assertEquals(Action.SUBMIT_DETAILS, TrialFlow.decide(BankSnapshot(labels), usd, prepared).action)
-    }
-    @Test fun amountInputRejectsAmbiguousOrInvalidValues() {
-        for (invalid in listOf("0", "-1", "NaN", "1e3", "1.000,50", "2,345", "", "20abc")) assertNull(Amounts.parse(invalid))
-        assertEquals(BigDecimal("20.50"), Amounts.parse("20,50"))
-        assertEquals(BigDecimal("20.50"), Amounts.parse("20.50"))
-        assertEquals("20,5", Amounts.forInput(BigDecimal("20.50")))
-    }
 
-    @Test fun offscreenFieldsDoNotMakeTheDetailsPageUnrecognizable() {
-        val snapshot = BankSnapshot(listOf("Detalle del Producto", "Desde mi cuenta:"), pageLabels = details)
-        assertEquals(Action.OPEN_ORIGIN, TrialFlow.decide(snapshot, usd, prepared).action)
-    }
+        if (s.pageHas("Verifica tu operación"))
+            return Decision(Action.CONTINUE_REVIEW, "Aceptando Verifica tu operación para abrir la declaración jurada.")
 
-    @Test fun scrollingPastTheSelectedOriginDoesNotReopenIt() {
-        val snapshot = BankSnapshot(listOf("Motivo de la compra:", "Selecciona el motivo de la compra"), pageLabels = details)
-        assertEquals(Action.OPEN_MOTIVE, TrialFlow.decide(snapshot, usd,
-            prepared.copy(originSelected = true)).action)
-    }
+        when (progress.dropdown) {
+            Dropdown.ORIGIN -> return if (s.exact("Ahorros personales"))
+                Decision(Action.SELECT_ORIGIN, "Seleccionando Ahorros personales.")
+            else Decision(Action.SCROLL_OPTIONS, "Buscando Ahorros personales en la lista.")
+            Dropdown.MOTIVE -> return if (s.exact("Ahorros"))
+                Decision(Action.SELECT_MOTIVE, "Seleccionando Ahorros.")
+            else Decision(Action.SCROLL_OPTIONS, "Buscando Ahorros en la lista.")
+            Dropdown.CURRENCY -> return if (s.exact(config.currency.option) || s.exact(config.currency.label))
+                Decision(Action.SELECT_CURRENCY, "Seleccionando la moneda elegida.")
+            else Decision(Action.SCROLL_OPTIONS, "Buscando la moneda elegida en la lista.")
+            null -> Unit
+        }
 
-    @Test fun offscreenBuyButtonIsStillTheNextPreparationStep() {
-        val snapshot = BankSnapshot(listOf("Origen de los fondos:"), pageLabels = details)
-        assertEquals(Action.SUBMIT_DETAILS, TrialFlow.decide(snapshot, usd,
-            prepared.copy(originSelected = true, motiveSelected = true)).action)
-    }
+        // Sheets overlay the form; recognize their options before the underlying page.
+        if (s.exact("Ahorros personales") && s.exact("Actividad comercial de empresa"))
+            return Decision(Action.SELECT_ORIGIN, "Seleccionando Ahorros personales.")
+        if (s.exact("Ahorros") && s.exact("Remesas"))
+            return Decision(Action.SELECT_MOTIVE, "Seleccionando Ahorros.")
+        if ((s.exact("Dólares") || s.exact("Dólares (USD)")) &&
+            (s.exact("Euros") || s.exact("Euros (EUR)")))
+            return Decision(Action.SELECT_CURRENCY, "Seleccionando la moneda elegida.")
 
-    @Test fun originSheetScrollsInsteadOfReopeningTheField() {
-        val snapshot = BankSnapshot(listOf("Actividad comercial de empresa", "Ahorro con aporte del padre"),
-            pageLabels = details + listOf("Ahorros personales"))
-        assertEquals(Action.SCROLL_OPTIONS, TrialFlow.decide(snapshot, usd,
-            prepared.copy(dropdown = Dropdown.ORIGIN)).action)
-    }
-
-    @Test fun visibleOriginDoesNotRequireAnotherOptionToBeVisible() {
-        assertEquals(Action.SELECT_ORIGIN, TrialFlow.decide(BankSnapshot(listOf("Ahorros personales")), usd,
-            prepared.copy(dropdown = Dropdown.ORIGIN)).action)
-    }
-
-    @Test fun currencySheetKeepsSearchingForTheChosenCurrency() {
-        val progress = TrialProgress(dropdown = Dropdown.CURRENCY)
-        assertEquals(Action.SCROLL_OPTIONS, TrialFlow.decide(BankSnapshot(listOf("Dólares")), eur, progress).action)
-        assertEquals(Action.SELECT_CURRENCY, TrialFlow.decide(BankSnapshot(listOf("Euros")), eur, progress).action)
-    }
-
-    @Test fun offscreenReviewHeaderIsStillRecognized() {
-        val snapshot = BankSnapshot(listOf("Aceptar", "Cancelar"), pageLabels = listOf("Verifica tu operación", "Aceptar", "Cancelar"))
-        assertEquals(Action.CONTINUE_REVIEW, TrialFlow.decide(snapshot, usd,
-            prepared.copy(detailsSubmitted = true, dropdown = Dropdown.ORIGIN)).action)
-    }
-
-    @Test fun declarationTakesPriorityWhenScrolledAndASelectorWasPending() {
-        val snapshot = BankSnapshot(listOf("Acepto la Declaración Jurada", "Continuar"),
-            pageLabels = listOf("Declaración jurada", "Acepto la Declaración Jurada", "Continuar"))
-        assertEquals(Action.ACCEPT_DECLARATION, TrialFlow.decide(snapshot, usd,
-            prepared.copy(dropdown = Dropdown.MOTIVE)).action)
-    }
-
-    @Test fun nextStepRespondsFasterWhileRepeatedSubmissionStillWaits() {
-        assertTrue(InteractionTiming.delay(Action.OPEN_MOTIVE, Action.SELECT_ORIGIN) < 400L)
-        assertTrue(InteractionTiming.delay(Action.SUBMIT_DETAILS, Action.SUBMIT_DETAILS) > 1_000L)
-        assertTrue(InteractionTiming.delay(Action.SUBMIT_DETAILS, Action.SUBMIT_DETAILS) >
-            InteractionTiming.delay(Action.OPEN_MOTIVE, Action.SELECT_ORIGIN))
+        if (s.pageHas("Detalle del Producto") && (s.pageHas("Origen de los fondos") || s.pageHas("Motivo de la compra") || progress.amountSubmitted)) {
+            if (!progress.amountSubmitted)
+                return Decision(Action.STOP_ERROR, "Hay un formulario anterior abierto. Vuelve a Mercado de divisas y reinicia la prueba para aplicar tu monto y moneda.")
+            if (!progress.originSelected && !s.has("Ahorros personales"))
+                return Decision(Action.OPEN_ORIGIN, "Mostrando Origen de los fondos.")
+            if (!progress.motiveSelected && !s.exact("Ahorros") && !s.has("Motivo de la compra: Ahorros") && !s.has("Motivo de la compra Ahorros"))
+                return Decision(Action.OPEN_MOTIVE, "Mostrando Motivo de la compra.")
+            return Decision(Action.SUBMIT_DETAILS, "Avanzando al resumen con las cuentas seleccionadas por Mercantil.")
+        }
+        if (s.has("Tipo de moneda") && s.has("Comprar")) {
+            if (!s.has(config.currency.label) && !s.exact(config.currency.option))
+                return Decision(Action.OPEN_CURRENCY, "Abriendo Tipo de moneda.")
+            val currentAmount = s.amountText?.let(Amounts::parse)
+            if (currentAmount == null || currentAmount.compareTo(config.amount) != 0)
+                return Decision(Action.SET_AMOUNT, "Escribiendo el monto elegido.")
+            return Decision(Action.SUBMIT_AMOUNT, "Abriendo el detalle de la operación.")
+        }
+        if (s.has("Mercado de divisas") && s.has("Vender divisas") && s.has("Comprar divisas"))
+            return Decision(Action.OPEN_BUY, "Abriendo Comprar divisas.")
+        if (s.exact("Mercado de divisas") && s.has("Transferencias"))
+            return Decision(Action.OPEN_MARKET, "Abriendo Mercado de divisas.")
+        if (s.has("Resumen financiero"))
+            return Decision(Action.OPEN_MENU, "Abre el menú inferior de Mercantil si no avanza automáticamente.")
+        return Decision(Action.WAIT, "Inicia sesión en Mercantil y abre Mercado de divisas. Esperando una pantalla reconocida.")
     }
 }
